@@ -34,9 +34,17 @@ struct Category {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+enum Type {
+    Income,
+    Expense,
+    Transfer,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 struct Transaction {
     id: i32,
     user: User,
+    r#type: Type,
     amount: f64,
     description: Option<String>,
     category: Category,
@@ -67,6 +75,7 @@ fn map_transaction(row: &SqliteRow) -> Result<Transaction, sqlx::Error> {
     Ok(Transaction {
         id: row.try_get("id")?,
         user,
+        r#type: row.try_get("type")?,
         amount: row.try_get("amount")?,
         description: row.try_get("description")?,
         category,
