@@ -5,7 +5,9 @@ edition = "2024"
 
 [dependencies]
 actix-web = "4.13.0"
+derive = "1.0.0"
+dotenvy = "0.15.7"
 serde = { version = "1.0.149", features = ["derive"] }
 serde_json = "1.0.149"
-sqlx = {version = "0.8.6", features = ["runtime-tokio-rustls", "sqlite", "macros", "time", "serde"] }
+sqlx = { version = "0.8.6", features = ["sqlite", "macros", "time", "derive", "runtime-tokio"] }
 time = { version = "0.3.47", features = ["serde"] }

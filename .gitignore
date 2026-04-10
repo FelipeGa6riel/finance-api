@@ -2,3 +2,6 @@
 
 # Database
 *.db
+
+# env files
+.env
