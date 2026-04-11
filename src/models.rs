@@ -17,7 +17,7 @@ fn default_datetime() -> PrimitiveDateTime {
     PrimitiveDateTime::new(now.date(), now.time())
 }
 
-#[derive(Serialize, Deserialize, Clone, Queryable, Insertable)]
+#[derive(Serialize, Deserialize, Clone, Queryable, Insertable, AsChangeset)]
 #[diesel(table_name = crate::schema::users)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct User {
@@ -30,7 +30,7 @@ pub struct User {
     pub updated_at: PrimitiveDateTime,
 }
 
-#[derive(Serialize, Deserialize, Clone, Queryable, Insertable)]
+#[derive(Serialize, Deserialize, Clone, Queryable, Insertable, AsChangeset)]
 #[diesel(table_name = crate::schema::categories)]
 #[diesel(belongs_to(User))]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
@@ -46,7 +46,7 @@ pub struct Category {
     pub updated_at: PrimitiveDateTime,
 }
 
-#[derive(Serialize, Deserialize, Clone, Queryable, Insertable)]
+#[derive(Serialize, Deserialize, Clone, Queryable, Insertable, AsChangeset)]
 #[diesel(table_name = crate::schema::accounts)]
 #[diesel(belongs_to(User))]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
@@ -62,7 +62,7 @@ pub struct Account {
     pub updated_at: PrimitiveDateTime,
 }
 
-#[derive(Serialize, Deserialize, Clone, Queryable, Insertable, Selectable)]
+#[derive(Serialize, Deserialize, Clone, Queryable, Insertable, Selectable, AsChangeset)]
 #[diesel(table_name = crate::schema::transactions)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Transaction {

@@ -66,6 +66,24 @@ async fn create_transaction(
     HttpResponse::Created().json(new_transaction)
 }
 
+#[post("/transactions/{id}")]
+async fn update_transaction (transaction_id: web::Path<i32>, transaction: web::Json<Transaction>, pool: web::Data<SqlitePool>) -> impl Responder {
+    let updated_transaction = transaction.into_inner();
+
+    let mut conn = pool
+        .get()
+        .expect("Failed to get a connection from the pool");
+
+    diesel::update(transactions::table)
+        .filter(transactions::id.eq(transaction_id.into_inner()))
+        .set(&updated_transaction)
+        .execute(&mut conn)
+        .expect("Error updating transaction");
+
+    HttpResponse::Ok().json(updated_transaction)
+}
+
+
 #[post("/users")]
 async fn create_user(user: web::Json<User>, pool: web::Data<SqlitePool>) -> impl Responder {
     let new_user = user.into_inner();
@@ -80,6 +98,23 @@ async fn create_user(user: web::Json<User>, pool: web::Data<SqlitePool>) -> impl
         .expect("Error inserting new user");
 
     HttpResponse::Created().json(new_user)
+}
+
+#[post("/users/{id}")]
+async fn update_user(user_id: web::Path<i32>, user: web::Json<User>, pool: web::Data<SqlitePool>) -> impl Responder {
+    let updated_user = user.into_inner();
+
+    let mut conn = pool
+        .get()
+        .expect("Failed to get a connection from the pool");
+
+    diesel::update(users::table)
+        .filter(users::id.eq(user_id.into_inner()))
+        .set(&updated_user)
+        .execute(&mut conn)
+        .expect("Error updating user");
+
+    HttpResponse::Ok().json(updated_user)
 }
 
 #[get("/users/{id}")]
@@ -226,10 +261,13 @@ async fn main() -> std::io::Result<()> {
             .service(get_transactions)
             .service(get_categories)
             .service(get_users)
+            .service(get_user)
             .service(create_user)
             .service(create_category)
             .service(create_account)
             .service(create_transaction)
+            .service(update_user)
+            .service(update_transaction)
     })
     .bind(("localhost", 8007))?
     .run()
