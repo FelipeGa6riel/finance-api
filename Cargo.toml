@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+actix-cors = "0.7.1"
 actix-web = "4.13.0"
 derive = "1.0.0"
 diesel = { version = "2.2.0", features = [
@@ -11,8 +12,11 @@ diesel = { version = "2.2.0", features = [
   "returning_clauses_for_sqlite_3_35",
   "time",
   "r2d2",
+  "serde_json",
 ] }
 dotenvy = "0.15.7"
+env_logger = "0.11.10"
+log = "0.4.29"
 serde = { version = "1.0.149", features = ["derive"] }
 serde_json = "1.0.149"
 sqlx = { version = "0.8.6", features = [
@@ -23,3 +27,4 @@ sqlx = { version = "0.8.6", features = [
   "runtime-tokio",
 ] }
 time = { version = "0.3.47", features = ["serde"] }
+uuid = { version = "1.23.0", features = ["v4"] }
