@@ -31,17 +31,19 @@ fn main() {
     let current_time = time::PrimitiveDateTime::new(now.date(), now.time());
 
     let new_user = User {
-        id: 1,
+        id: "1".to_string(),
         name: "Felipe Silva".to_string(),
         email: "felipe@example.com".to_string(),
+        password: Some("password123".to_string()),
         created_at: current_time,
         updated_at: current_time,
     };
 
     let user_two = User {
-        id: 2,
+        id: "2".to_string(),
         name: "Ana Costa".to_string(),
         email: "ana.costa@example.com".to_string(),
+        password: Some("password456".to_string()),
         created_at: current_time,
         updated_at: current_time,
     };
@@ -52,31 +54,31 @@ fn main() {
         .expect("Error inserting users");
 
     let new_account = Account {
-        id: 1,
-        name: "Checking Account".to_string(),
-        balance: 5000_00, // $5,000.00
-        bank_name: "NuBank".to_string(),
-        user_id: 1,
+        id: "1".to_string(),
+        name: "Bank".to_string(),
+        balance: 8000_00,
+        bank_name: "Bradesco".to_string(),
+        user_id: "1".to_string(),
         created_at: current_time,
         updated_at: current_time,
     };
 
     let account_two = Account {
-        id: 2,
-        name: "Savings Account".to_string(),
-        balance: 1500_00, // $1,500.00
-        bank_name: "Itau".to_string(),
-        user_id: 2,
+        id: "2".to_string(),
+        name: "cash".to_string(),
+        balance: 1000_00,
+        bank_name: "".to_string(),
+        user_id: "2".to_string(),
         created_at: current_time,
         updated_at: current_time,
     };
 
     let account_three = Account {
-        id: 3,
+        id: "3".to_string(),
         name: "Investment Account".to_string(),
-        balance: 0,
+        balance: 200_00,
         bank_name: "XP Investimentos".to_string(),
-        user_id: 2,
+        user_id: "2".to_string(),
         created_at: current_time,
         updated_at: current_time,
     };
@@ -87,28 +89,34 @@ fn main() {
         .expect("Error inserting accounts");
 
     let new_category_salary = Category {
-        id: 1,
+        id: "1".to_string(),
         name: "Salary".to_string(),
         description: Some("Monthly income".to_string()),
-        user_id: Some(1),
+        color: Some("#4CAF50".to_string()),
+        icon: Some("💼".to_string()),
+        user_id: Some("1".to_string()),
         created_at: current_time,
         updated_at: current_time,
     };
 
     let new_category_food = Category {
-        id: 2,
+        id: "2".to_string(),
         name: "Food".to_string(),
         description: Some("Groceries and dining out".to_string()),
-        user_id: Some(1),
+        color: Some("#FF5722".to_string()),
+        icon: Some("🍔".to_string()),
+        user_id: Some("1".to_string()),
         created_at: current_time,
         updated_at: current_time,
     };
     
     let category_freelance = Category {
-        id: 3,
+        id: "3".to_string(),
         name: "Freelance".to_string(),
         description: Some("Extra income".to_string()),
-        user_id: Some(2),
+        color: Some("#2196F3".to_string()),
+        icon: Some("💻".to_string()),
+        user_id: Some("2".to_string()),
         created_at: current_time,
         updated_at: current_time,
     };
@@ -119,55 +127,55 @@ fn main() {
         .expect("Error inserting categories");
 
     let new_transaction_income = Transaction {
-        id: 1,
+        id: "1".to_string(),
         amount: 8000_00, // $8,000.00
         description: Some("March Salary".to_string()),
         date: current_time,
         type_: Type::Income,
-        account_id: 1,
+        account_id: "1".to_string(),
         transfer_id: None,
-        category_id: Some(new_category_salary.id),
-        user_id: 1,
+        category_id: Some(new_category_salary.id.clone()),
+        user_id: "1".to_string(),
         created_at: current_time,
         updated_at: current_time,
     };
 
     let new_transaction_expense = Transaction {
-        id: 2,
+        id: "2".to_string(),
         amount: 150_50, // $150.50
         description: Some("Supermarket".to_string()),
         date: current_time,
         type_: Type::Expense,
-        account_id: 1,
+        account_id: "1".to_string(),
         transfer_id: None,
-        category_id: Some(new_category_food.id),
-        user_id: 1,
+        category_id: Some(new_category_food.id.clone()),
+        user_id: "1".to_string(),
         created_at: current_time,
         updated_at: current_time,
     };
 
     let new_transaction_freelance = Transaction {
-        id: 3,
+        id: "3".to_string(),
         amount: 2500_00,
         description: Some("Web Project".to_string()),
         date: current_time,
         type_: Type::Income,
-        account_id: 2,
+        account_id: "2".to_string(),
         transfer_id: None,
-        category_id: Some(category_freelance.id),
-        user_id: 2,
+        category_id: Some(category_freelance.id.clone()),
+        user_id: "2".to_string(),
         created_at: current_time,
         updated_at: current_time,
     };
 
     let transfer = AccountTransfer {
-        id: 1,
-        from_account_id: 2,
-        to_account_id: 3,
+        id: "1".to_string(),
+        from_account_id: "2".to_string(),
+        to_account_id: "3".to_string(),
         amount: 500_00,
         description: Some("Monthly Investment".to_string()),
         date: current_time,
-        user_id: 2,
+        user_id: "2".to_string(),
         created_at: current_time,
         updated_at: current_time,
     };
@@ -178,29 +186,29 @@ fn main() {
         .expect("Error inserting transfer");
 
     let transfer_out = Transaction {
-        id: 4,
+        id: "4".to_string(),
         amount: 500_00,
         description: Some("Transfer to Investment".to_string()),
         date: current_time,
         type_: Type::Expense,
-        account_id: 2,
-        transfer_id: Some(transfer.id),
+        account_id: "2".to_string(),
+        transfer_id: Some(transfer.id.clone()),
         category_id: None,
-        user_id: 2,
+        user_id: "2".to_string(),
         created_at: current_time,
         updated_at: current_time,
     };
 
     let transfer_in = Transaction {
-        id: 5,
+        id: "5".to_string(),
         amount: 500_00,
         description: Some("Transfer from Savings".to_string()),
         date: current_time,
         type_: Type::Income,
-        account_id: 3,
-        transfer_id: Some(transfer.id),
+        account_id: "3".to_string(),
+        transfer_id: Some(transfer.id.clone()),
         category_id: None,
-        user_id: 2,
+        user_id: "2".to_string(),
         created_at: current_time,
         updated_at: current_time,
     };

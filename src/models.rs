@@ -1,10 +1,12 @@
+use core::str;
+
 use diesel::deserialize::FromSql;
+use diesel::prelude::*;
+use diesel::serialize::{Output, ToSql};
 use diesel::sql_types::Text;
 use diesel::sqlite::Sqlite;
 use serde::{Deserialize, Serialize};
 use time::PrimitiveDateTime;
-use diesel::prelude::*;
-use diesel::serialize::{ToSql, Output};
 
 time::serde::format_description!(
     date_format,
@@ -17,13 +19,19 @@ fn default_datetime() -> PrimitiveDateTime {
     PrimitiveDateTime::new(now.date(), now.time())
 }
 
+fn default_uuid() -> String {
+    uuid::Uuid::new_v4().to_string()
+}
+
 #[derive(Serialize, Deserialize, Clone, Queryable, Insertable, AsChangeset)]
 #[diesel(table_name = crate::schema::users)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct User {
-    pub id: i32,
+    #[serde(skip_serializing_if = "String::is_empty", default = "default_uuid")]
+    pub id: String,
     pub name: String,
     pub email: String,
+    pub password: Option<String>,
     #[serde(with = "date_format", default = "default_datetime")]
     pub created_at: PrimitiveDateTime,
     #[serde(with = "date_format", default = "default_datetime")]
@@ -35,11 +43,13 @@ pub struct User {
 #[diesel(belongs_to(User))]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Category {
-    pub id: i32,
+    #[serde(skip_serializing_if = "String::is_empty", default = "default_uuid")]
+    pub id: String,
     pub name: String,
     pub description: Option<String>,
-    #[diesel()]
-    pub user_id: Option<i32>,
+    pub color: Option<String>,
+    pub icon: Option<String>,
+    pub user_id: Option<String>,
     #[serde(with = "date_format", default = "default_datetime")]
     pub created_at: PrimitiveDateTime,
     #[serde(with = "date_format", default = "default_datetime")]
@@ -51,11 +61,12 @@ pub struct Category {
 #[diesel(belongs_to(User))]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Account {
-    pub id: i32,
+    #[serde(skip_serializing_if = "String::is_empty", default = "default_uuid")]
+    pub id: String,
     pub name: String,
     pub balance: i64,
     pub bank_name: String,
-    pub user_id: i32,
+    pub user_id: String,
     #[serde(with = "date_format", default = "default_datetime")]
     pub created_at: PrimitiveDateTime,
     #[serde(with = "date_format", default = "default_datetime")]
@@ -66,16 +77,18 @@ pub struct Account {
 #[diesel(table_name = crate::schema::transactions)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Transaction {
-    pub id: i32,
+    #[serde(skip_serializing_if = "String::is_empty", default = "default_uuid")]
+    pub id: String,
     pub amount: i64,
     pub description: Option<String>,
     #[serde(with = "date_format", default = "default_datetime")]
     pub date: PrimitiveDateTime,
+    #[serde(rename = "type")]
     pub type_: Type,
-    pub account_id: i32,
-    pub transfer_id: Option<i32>,
-    pub category_id: Option<i32>,
-    pub user_id: i32,
+    pub account_id: String,
+    pub transfer_id: Option<String>,
+    pub category_id: Option<String>,
+    pub user_id: String,
     #[serde(with = "date_format", default = "default_datetime")]
     pub created_at: PrimitiveDateTime,
     #[serde(with = "date_format", default = "default_datetime")]
@@ -88,14 +101,15 @@ pub struct Transaction {
 #[diesel(belongs_to(Account, foreign_key = from_account_id))]
 #[diesel(belongs_to(Account, foreign_key = to_account_id))]
 pub struct AccountTransfer {
-    pub id: i32,
-    pub from_account_id: i32,
-    pub to_account_id: i32,
+    #[serde(skip_serializing_if = "String::is_empty", default = "default_uuid")]
+    pub id: String,
+    pub from_account_id: String,
+    pub to_account_id: String,
     pub amount: i64,
     pub description: Option<String>,
     #[serde(with = "date_format", default = "default_datetime")]
     pub date: PrimitiveDateTime,
-    pub user_id: i32,
+    pub user_id: String,
     #[serde(with = "date_format", default = "default_datetime")]
     pub created_at: PrimitiveDateTime,
     #[serde(with = "date_format", default = "default_datetime")]
@@ -119,11 +133,12 @@ impl ToSql<Text, Sqlite> for Type {
         };
         ToSql::<Text, Sqlite>::to_sql(s, out)
     }
-    
 }
 
 impl FromSql<Text, Sqlite> for Type {
-    fn from_sql(bytes: <Sqlite as diesel::backend::Backend>::RawValue<'_>) -> diesel::deserialize::Result<Self> {
+    fn from_sql(
+        bytes: <Sqlite as diesel::backend::Backend>::RawValue<'_>,
+    ) -> diesel::deserialize::Result<Self> {
         let s = <String as FromSql<Text, Sqlite>>::from_sql(bytes)?;
         match s.as_str() {
             "income" => Ok(Type::Income),

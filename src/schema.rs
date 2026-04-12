@@ -2,13 +2,13 @@
 
 diesel::table! {
     account_transfers (id) {
-        id -> Integer,
-        from_account_id -> Integer,
-        to_account_id -> Integer,
+        id -> Text,
+        from_account_id -> Text,
+        to_account_id -> Text,
         amount -> BigInt,
         description -> Nullable<Text>,
         date -> Timestamp,
-        user_id -> Integer,
+        user_id -> Text,
         created_at -> Timestamp,
         updated_at -> Timestamp,
     }
@@ -16,11 +16,11 @@ diesel::table! {
 
 diesel::table! {
     accounts (id) {
-        id -> Integer,
+        id -> Text,
         name -> Text,
         balance -> BigInt,
         bank_name -> Text,
-        user_id -> Integer,
+        user_id -> Text,
         created_at -> Timestamp,
         updated_at -> Timestamp,
     }
@@ -28,10 +28,12 @@ diesel::table! {
 
 diesel::table! {
     categories (id) {
-        id -> Integer,
+        id -> Text,
         name -> Text,
         description -> Nullable<Text>,
-        user_id -> Nullable<Integer>,
+        color -> Nullable<Text>,
+        icon -> Nullable<Text>,
+        user_id -> Nullable<Text>,
         created_at -> Timestamp,
         updated_at -> Timestamp,
     }
@@ -39,16 +41,16 @@ diesel::table! {
 
 diesel::table! {
     transactions (id) {
-        id -> Integer,
+        id -> Text,
         amount -> BigInt,
         description -> Nullable<Text>,
         date -> Timestamp,
         #[sql_name = "type"]
         type_ -> Text,
-        account_id -> Integer,
-        transfer_id -> Nullable<Integer>,
-        category_id -> Nullable<Integer>,
-        user_id -> Integer,
+        account_id -> Text,
+        transfer_id -> Nullable<Text>,
+        category_id -> Nullable<Text>,
+        user_id -> Text,
         created_at -> Timestamp,
         updated_at -> Timestamp,
     }
@@ -56,9 +58,10 @@ diesel::table! {
 
 diesel::table! {
     users (id) {
-        id -> Integer,
+        id -> Text,
         name -> Text,
         email -> Text,
+        password -> Nullable<Text>,
         created_at -> Timestamp,
         updated_at -> Timestamp,
     }
