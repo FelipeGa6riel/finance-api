@@ -19,22 +19,22 @@ fn main() {
 
     println!("Seeding database...");
 
-    // Helper to clear existing data to start fresh
     diesel::delete(schema::account_transfers::table).execute(&mut conn).expect("Failed to delete transfers");
     diesel::delete(schema::transactions::table).execute(&mut conn).expect("Failed to delete transactions");
     diesel::delete(schema::categories::table).execute(&mut conn).expect("Failed to delete categories");
     diesel::delete(schema::accounts::table).execute(&mut conn).expect("Failed to delete accounts");
     diesel::delete(schema::users::table).execute(&mut conn).expect("Failed to delete users");
 
-    // Current datetime for created/updated
     let now = time::OffsetDateTime::now_utc();
     let current_time = time::PrimitiveDateTime::new(now.date(), now.time());
 
     let new_user = User {
         id: "1".to_string(),
         name: "Felipe Silva".to_string(),
+        currency: Some("BRL".to_string()),
         email: "felipe@example.com".to_string(),
-        password: Some("password123".to_string()),
+        // Hash "password123"
+        password: Some("$2a$12$t.XtIm8KrmUGd8yv88GIa.0ylr1GBDT8Rn6vJYV5qiZdrFLXb6z02".to_string()),
         created_at: current_time,
         updated_at: current_time,
     };
@@ -42,8 +42,10 @@ fn main() {
     let user_two = User {
         id: "2".to_string(),
         name: "Ana Costa".to_string(),
+        currency: Some("BRL".to_string()),
         email: "ana.costa@example.com".to_string(),
-        password: Some("password456".to_string()),
+        // Hash "password123"
+        password: Some("$2a$12$t.XtIm8KrmUGd8yv88GIa.0ylr1GBDT8Rn6vJYV5qiZdrFLXb6z02".to_string()),
         created_at: current_time,
         updated_at: current_time,
     };
@@ -56,6 +58,7 @@ fn main() {
     let new_account = Account {
         id: "1".to_string(),
         name: "Bank".to_string(),
+        icon: Some("🏦".to_string()),
         balance: 8000_00,
         bank_name: "Bradesco".to_string(),
         user_id: "1".to_string(),
@@ -66,6 +69,7 @@ fn main() {
     let account_two = Account {
         id: "2".to_string(),
         name: "cash".to_string(),
+        icon: Some("💵".to_string()),
         balance: 1000_00,
         bank_name: "".to_string(),
         user_id: "2".to_string(),
@@ -76,6 +80,7 @@ fn main() {
     let account_three = Account {
         id: "3".to_string(),
         name: "Investment Account".to_string(),
+        icon: Some("📈".to_string()),
         balance: 200_00,
         bank_name: "XP Investimentos".to_string(),
         user_id: "2".to_string(),

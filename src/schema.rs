@@ -18,6 +18,7 @@ diesel::table! {
     accounts (id) {
         id -> Text,
         name -> Text,
+        icon -> Nullable<Text>,
         balance -> BigInt,
         bank_name -> Text,
         user_id -> Text,
@@ -60,6 +61,7 @@ diesel::table! {
     users (id) {
         id -> Text,
         name -> Text,
+        currency -> Nullable<Text>,
         email -> Text,
         password -> Nullable<Text>,
         created_at -> Timestamp,

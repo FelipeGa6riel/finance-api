@@ -23,14 +23,16 @@ fn default_uuid() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
-#[derive(Serialize, Deserialize, Clone, Queryable, Insertable, AsChangeset)]
+#[derive(Serialize, Deserialize, Clone, Queryable, Insertable, AsChangeset, Selectable)]
 #[diesel(table_name = crate::schema::users)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct User {
     #[serde(skip_serializing_if = "String::is_empty", default = "default_uuid")]
     pub id: String,
     pub name: String,
+    pub currency: Option<String>,
     pub email: String,
+    #[serde(skip_serializing)]
     pub password: Option<String>,
     #[serde(with = "date_format", default = "default_datetime")]
     pub created_at: PrimitiveDateTime,
@@ -38,7 +40,7 @@ pub struct User {
     pub updated_at: PrimitiveDateTime,
 }
 
-#[derive(Serialize, Deserialize, Clone, Queryable, Insertable, AsChangeset)]
+#[derive(Serialize, Deserialize, Clone, Queryable, Insertable, AsChangeset, Selectable)]
 #[diesel(table_name = crate::schema::categories)]
 #[diesel(belongs_to(User))]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
@@ -56,7 +58,7 @@ pub struct Category {
     pub updated_at: PrimitiveDateTime,
 }
 
-#[derive(Serialize, Deserialize, Clone, Queryable, Insertable, AsChangeset)]
+#[derive(Serialize, Deserialize, Clone, Queryable, Insertable, AsChangeset, Selectable)]
 #[diesel(table_name = crate::schema::accounts)]
 #[diesel(belongs_to(User))]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
@@ -64,6 +66,7 @@ pub struct Account {
     #[serde(skip_serializing_if = "String::is_empty", default = "default_uuid")]
     pub id: String,
     pub name: String,
+    pub icon: Option<String>,
     pub balance: i64,
     pub bank_name: String,
     pub user_id: String,

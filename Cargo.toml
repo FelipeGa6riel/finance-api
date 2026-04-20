@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 actix-cors = "0.7.1"
 actix-web = "4.13.0"
+actix-web-httpauth = "0.8.2"
+bcrypt = "0.19.0"
 derive = "1.0.0"
 diesel = { version = "2.2.0", features = [
   "sqlite",
@@ -16,6 +18,7 @@ diesel = { version = "2.2.0", features = [
 ] }
 dotenvy = "0.15.7"
 env_logger = "0.11.10"
+jsonwebtoken = "9.3.0"
 log = "0.4.29"
 serde = { version = "1.0.149", features = ["derive"] }
 serde_json = "1.0.149"
