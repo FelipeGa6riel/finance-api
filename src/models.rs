@@ -80,7 +80,7 @@ pub struct Account {
 #[diesel(table_name = crate::schema::transactions)]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct Transaction {
-    #[serde(skip_serializing_if = "String::is_empty", default = "default_uuid")]
+    #[serde(skip_serializing, skip_deserializing, default = "default_uuid")]
     pub id: String,
     pub amount: i64,
     pub description: Option<String>,
