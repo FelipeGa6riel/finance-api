@@ -91,6 +91,7 @@ pub struct Transaction {
     pub account_id: String,
     pub transfer_id: Option<String>,
     pub category_id: Option<String>,
+    #[serde(skip_serializing, skip_deserializing)]
     pub user_id: String,
     #[serde(with = "date_format", default = "default_datetime")]
     pub created_at: PrimitiveDateTime,

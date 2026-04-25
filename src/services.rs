@@ -1,6 +1,6 @@
-use crate::models::{Account, Category, Transaction, User};
+use crate::models::{Account, Category, Transaction, User, Type};
 use crate::schema::{accounts, categories, transactions, users};
-use actix_web::{HttpResponse, Responder, get, post, web};
+use actix_web::{HttpResponse, Responder, get, post, put, web};
 use diesel::SqliteConnection;
 use diesel::prelude::*;
 use diesel::r2d2::{ConnectionManager, Pool};
@@ -87,6 +87,9 @@ async fn create_transaction(
     pool: web::Data<SqlitePool>,
     claims: web::ReqData<Claims>,
 ) -> impl Responder {
+    use crate::schema::transactions::dsl::*;
+    use crate::schema::accounts::dsl as accounts_dsl;
+
     let new_transaction = transaction.into_inner();
 
     let mut conn = pool
@@ -100,12 +103,35 @@ async fn create_transaction(
         ..new_transaction
     };
 
-    diesel::insert_into(transactions::table)
-        .values(&transaction_with_user)
-        .execute(&mut conn)
-        .expect("Error inserting new transaction");
+    let result = conn.transaction::<_, diesel::result::Error, _>(|conn| {
+        let impact = match transaction_with_user.type_ {
+            Type::Income => transaction_with_user.amount,
+            Type::Expense => -transaction_with_user.amount,
+            Type::Transfer => 0,
+        };
 
-    HttpResponse::Created().json(transaction_with_user)
+        if impact != 0 {
+
+            let mut account = accounts_dsl::accounts
+                .filter(accounts_dsl::id.eq(&transaction_with_user.account_id))
+                .first::<Account>(conn)?;
+
+            diesel::update(accounts_dsl::accounts.filter(accounts_dsl::id.eq(&account.id)))
+                .set(accounts_dsl::balance.eq(account.balance + impact))
+                .execute(conn)?;
+        }
+
+        diesel::insert_into(transactions)
+            .values(&transaction_with_user)
+            .execute(conn)?;
+
+        Ok(transaction_with_user)
+    });
+
+    match result {
+        Ok(transaction) => HttpResponse::Created().json(transaction),
+        Err(_) => HttpResponse::InternalServerError().finish(),
+    }
 }
 
 #[get("/transactions")]
@@ -174,7 +200,7 @@ async fn get_transaction(
     }
 }
 
-#[post("/transactions/{id}")]
+#[put("/transactions/{id}")]
 async fn update_transaction(
     transaction_id: web::Path<String>,
     transaction: web::Json<Transaction>,

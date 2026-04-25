@@ -5,3 +5,15 @@
 
 # env files
 .env
+
+
+# Agents
+.agents/
+.claude/
+.skills/
+.gemini/
+.cursor/
+.antigravity/
+.warp/
+.codex/
+.github/
