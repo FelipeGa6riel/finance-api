@@ -17,3 +17,6 @@
 .warp/
 .codex/
 .github/
+*.db-shm
+*.db-wal
+migrations/.diesel_lock

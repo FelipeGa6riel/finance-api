@@ -3,12 +3,31 @@ name = "finance-api"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "finance_api"
+path = "src/lib.rs"
+
+[[bin]]
+name = "finance-api"
+path = "src/main.rs"
+
+[[bin]]
+name = "seed"
+path = "src/bin/seed.rs"
+
+[[bin]]
+name = "user_admin"
+path = "src/bin/user_admin.rs"
+
+[[bin]]
+name = "import_vault"
+path = "src/bin/import_vault.rs"
+
 [dependencies]
 actix-cors = "0.7.1"
 actix-web = "4.13.0"
 actix-web-httpauth = "0.8.2"
 bcrypt = "0.19.0"
-derive = "1.0.0"
 diesel = { version = "2.2.0", features = [
   "sqlite",
   "returning_clauses_for_sqlite_3_35",
@@ -19,15 +38,7 @@ diesel = { version = "2.2.0", features = [
 dotenvy = "0.15.7"
 env_logger = "0.11.10"
 jsonwebtoken = "9.3.0"
-log = "0.4.29"
 serde = { version = "1.0.149", features = ["derive"] }
 serde_json = "1.0.149"
-sqlx = { version = "0.8.6", features = [
-  "sqlite",
-  "macros",
-  "time",
-  "derive",
-  "runtime-tokio",
-] }
 time = { version = "0.3.47", features = ["serde"] }
 uuid = { version = "1.23.0", features = ["v4"] }
