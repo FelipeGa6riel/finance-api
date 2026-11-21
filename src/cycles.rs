@@ -238,6 +238,24 @@ pub fn previous_cycle_key(cycle_key: &str) -> Result<String, String> {
     Ok(format!("{:04}-{:02}", py, pm as u8))
 }
 
+pub fn clean_cycle_label(raw: &str) -> String {
+    let mut t = raw.trim();
+    for prefix in [
+        "Rastreador Financeiro - ",
+        "rastreador financeiro - ",
+        "Rastreador Financeiro -",
+        "Financeiro - ",
+        "financeiro - ",
+        "Financeiro -",
+    ] {
+        if let Some(rest) = t.strip_prefix(prefix) {
+            t = rest.trim();
+            break;
+        }
+    }
+    t.to_string()
+}
+
 pub fn default_cycle_label(start: Date, end: Date) -> String {
     if start.year() == end.year() {
         format!(
@@ -298,8 +316,9 @@ pub fn resolve_cycle_window(
         let end_dt = parse_bound_end(&c.end_date)?;
         let lbl = c
             .label
-            .clone()
-            .filter(|s| !s.trim().is_empty())
+            .as_deref()
+            .map(clean_cycle_label)
+            .filter(|s| !s.is_empty())
             .unwrap_or_else(|| default_cycle_label(start_dt.date(), end_dt.date()));
         return Ok((start_dt, end_dt, lbl, cfg));
     }
@@ -365,8 +384,9 @@ pub fn list_user_cycles(conn: &mut SqliteConnection, user: &User) -> ApiResult<V
                 .unwrap_or_else(|_| c.end_date.clone());
             let label = c
                 .label
-                .clone()
-                .filter(|s| !s.trim().is_empty())
+                .as_deref()
+                .map(clean_cycle_label)
+                .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| {
                     if let (Ok(sd), Ok(ed)) = (parse_ymd(&s_d), parse_ymd(&e_d)) {
                         default_cycle_label(sd, ed)
@@ -736,19 +756,19 @@ pub fn compute_cycle_summary(
                 ("fixed".to_string(), c.savings_percent, c.savings_fixed_amount, amt)
             } else {
                 let pct = c.savings_percent.unwrap_or(user.default_savings_percent);
-                let amt = ((salary_base as f64) * (pct as f64) / 100.0).round() as i64;
+                let amt = ((total_income as f64) * (pct as f64) / 100.0).round() as i64;
                 ("percent".to_string(), Some(pct), c.savings_fixed_amount, amt)
             }
         } else if savings_transfers_total > 0 {
             ("transfer".to_string(), None, None, savings_transfers_total)
         } else {
             let pct = user.default_savings_percent;
-            let amt = ((salary_base as f64) * (pct as f64) / 100.0).round() as i64;
+            let amt = ((total_income as f64) * (pct as f64) / 100.0).round() as i64;
             ("percent".to_string(), Some(pct), None, amt)
         };
 
-    let saved_percent = if salary_base > 0 {
-        (saved_amount as f64 / salary_base as f64) * 100.0
+    let saved_percent = if total_income > 0 {
+        (saved_amount as f64 / total_income as f64) * 100.0
     } else {
         0.0
     };

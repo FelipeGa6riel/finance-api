@@ -1,6 +1,6 @@
 use diesel::prelude::*;
 use dotenvy::dotenv;
-use finance_api::cycles::{cycle_bounds_for_key, default_cycle_label};
+use finance_api::cycles::{clean_cycle_label, cycle_bounds_for_key, default_cycle_label};
 use finance_api::db::{build_pool, now_utc};
 use finance_api::defaults::seed_user_defaults;
 use finance_api::models::{
@@ -187,7 +187,7 @@ fn parse_markdown_file(cycle_key: &str, content: &str) -> ParsedFile {
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("# ") {
-            title = trimmed.trim_start_matches('#').trim().to_string();
+            title = clean_cycle_label(trimmed.trim_start_matches('#').trim());
             continue;
         }
         if trimmed.starts_with("## ") {
