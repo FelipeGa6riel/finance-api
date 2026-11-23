@@ -10,7 +10,7 @@ use crate::schema::{
 };
 use diesel::prelude::*;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use time::{Date, Month, PrimitiveDateTime, Time};
 use uuid::Uuid;
 
@@ -21,6 +21,7 @@ pub struct CycleInfo {
     pub end_date: String,
     pub label: String,
     pub has_custom_config: bool,
+    pub total_expenses: i64,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -331,26 +332,122 @@ pub fn resolve_cycle_window(
     Ok((start_dt, end_dt, lbl, None))
 }
 
-pub fn list_user_cycles(conn: &mut SqliteConnection, user: &User) -> ApiResult<Vec<CycleInfo>> {
-    let configs: Vec<CycleConfig> = cycle_configs::table
-        .filter(cycle_configs::user_id.eq(&user.id))
-        .load(conn)?;
+struct ResolvedCycleWindow<'a> {
+    cycle_key: String,
+    start_date: String,
+    end_date: String,
+    start_dt: Option<PrimitiveDateTime>,
+    end_dt: Option<PrimitiveDateTime>,
+    label: String,
+    has_custom_config: bool,
+    config: Option<&'a CycleConfig>,
+}
 
-    let mut config_map: HashMap<String, CycleConfig> = HashMap::new();
+fn resolve_all_cycles<'a, I1, I2>(
+    configs: &'a [CycleConfig],
+    tx_dates: I1,
+    tr_dates: I2,
+    user: &User,
+) -> Vec<ResolvedCycleWindow<'a>>
+where
+    I1: Iterator<Item = PrimitiveDateTime>,
+    I2: Iterator<Item = PrimitiveDateTime>,
+{
+    let mut config_map: HashMap<&str, &'a CycleConfig> = HashMap::with_capacity(configs.len());
+    let mut parsed_config_bounds: Vec<(PrimitiveDateTime, PrimitiveDateTime)> =
+        Vec::with_capacity(configs.len());
     let mut keys: BTreeSet<String> = BTreeSet::new();
 
     for c in configs {
         keys.insert(c.cycle_key.clone());
-        config_map.insert(c.cycle_key.clone(), c);
+        config_map.insert(c.cycle_key.as_str(), c);
+        if let (Ok(s), Ok(e)) = (parse_bound_start(&c.start_date), parse_bound_end(&c.end_date)) {
+            parsed_config_bounds.push((s, e));
+        }
     }
 
     let current_key = cycle_key_for_date(now_utc().date(), user.cycle_start_day);
     keys.insert(current_key);
 
-    let tx_dates: Vec<PrimitiveDateTime> = transactions::table
+    // Only infer cycle_key for dates that don't already fall into an explicit cycle_config
+    for dt in tx_dates.chain(tr_dates) {
+        let matched_config = parsed_config_bounds
+            .iter()
+            .any(|(s, e)| dt >= *s && dt <= *e);
+        if !matched_config {
+            keys.insert(cycle_key_for_date(dt.date(), user.cycle_start_day));
+        }
+    }
+
+    let mut out = Vec::with_capacity(keys.len());
+    for key in keys {
+        if let Some(&c) = config_map.get(key.as_str()) {
+            let start_dt = parse_bound_start(&c.start_date).ok();
+            let end_dt = parse_bound_end(&c.end_date).ok();
+            let s_d = start_dt
+                .map(|dt| format_ymd(dt.date()))
+                .unwrap_or_else(|| c.start_date.clone());
+            let e_d = end_dt
+                .map(|dt| format_ymd(dt.date()))
+                .unwrap_or_else(|| c.end_date.clone());
+            let label = c
+                .label
+                .as_deref()
+                .map(clean_cycle_label)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    if let (Some(s), Some(e)) = (start_dt, end_dt) {
+                        default_cycle_label(s.date(), e.date())
+                    } else if let (Ok(sd), Ok(ed)) = (parse_ymd(&s_d), parse_ymd(&e_d)) {
+                        default_cycle_label(sd, ed)
+                    } else {
+                        key.clone()
+                    }
+                });
+            out.push(ResolvedCycleWindow {
+                cycle_key: key,
+                start_date: s_d,
+                end_date: e_d,
+                start_dt,
+                end_dt,
+                label,
+                has_custom_config: true,
+                config: Some(c),
+            });
+        } else if let Ok((sd, ed)) = cycle_bounds_for_key(&key, user.cycle_start_day) {
+            let start_dt = PrimitiveDateTime::new(sd, Time::MIDNIGHT);
+            let end_dt =
+                PrimitiveDateTime::new(ed, Time::from_hms(23, 59, 59).expect("valid end time"));
+            out.push(ResolvedCycleWindow {
+                cycle_key: key,
+                start_date: format_ymd(sd),
+                end_date: format_ymd(ed),
+                start_dt: Some(start_dt),
+                end_dt: Some(end_dt),
+                label: default_cycle_label(sd, ed),
+                has_custom_config: false,
+                config: None,
+            });
+        }
+    }
+
+    out
+}
+
+pub fn list_user_cycles(conn: &mut SqliteConnection, user: &User) -> ApiResult<Vec<CycleInfo>> {
+    let configs: Vec<CycleConfig> = cycle_configs::table
+        .filter(cycle_configs::user_id.eq(&user.id))
+        .load(conn)?;
+
+    let tx_rows: Vec<(PrimitiveDateTime, Type, bool, i64)> = transactions::table
         .filter(transactions::user_id.eq(&user.id))
         .filter(transactions::deleted_at.is_null())
-        .select(transactions::date)
+        .select((
+            transactions::date,
+            transactions::type_,
+            transactions::is_informational,
+            transactions::amount,
+        ))
         .load(conn)?;
 
     let tr_dates: Vec<PrimitiveDateTime> = account_transfers::table
@@ -359,58 +456,38 @@ pub fn list_user_cycles(conn: &mut SqliteConnection, user: &User) -> ApiResult<V
         .select(account_transfers::date)
         .load(conn)?;
 
-    // Only infer cycle_key for dates that don't already fall into an explicit cycle_config
-    for dt in tx_dates.into_iter().chain(tr_dates.into_iter()) {
-        let matched_config = config_map.values().any(|c| {
-            if let (Ok(s), Ok(e)) = (parse_bound_start(&c.start_date), parse_bound_end(&c.end_date)) {
-                dt >= s && dt <= e
-            } else {
-                false
+    let resolved = resolve_all_cycles(
+        &configs,
+        tx_rows.iter().map(|(dt, _, _, _)| *dt),
+        tr_dates.into_iter(),
+        user,
+    );
+
+    let mut expense_totals = vec![0i64; resolved.len()];
+    for (dt, ty, is_informational, amount) in &tx_rows {
+        if *ty == Type::Expense && !*is_informational && *amount > 0 {
+            for (idx, w) in resolved.iter().enumerate() {
+                if let (Some(s), Some(e)) = (w.start_dt, w.end_dt) {
+                    if *dt >= s && *dt <= e {
+                        expense_totals[idx] += *amount;
+                    }
+                }
             }
-        });
-        if !matched_config {
-            keys.insert(cycle_key_for_date(dt.date(), user.cycle_start_day));
         }
     }
 
-    let mut out = Vec::with_capacity(keys.len());
-    for key in keys {
-        if let Some(c) = config_map.get(&key) {
-            let s_d = parse_bound_start(&c.start_date)
-                .map(|dt| format_ymd(dt.date()))
-                .unwrap_or_else(|_| c.start_date.clone());
-            let e_d = parse_bound_end(&c.end_date)
-                .map(|dt| format_ymd(dt.date()))
-                .unwrap_or_else(|_| c.end_date.clone());
-            let label = c
-                .label
-                .as_deref()
-                .map(clean_cycle_label)
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| {
-                    if let (Ok(sd), Ok(ed)) = (parse_ymd(&s_d), parse_ymd(&e_d)) {
-                        default_cycle_label(sd, ed)
-                    } else {
-                        key.clone()
-                    }
-                });
-            out.push(CycleInfo {
-                cycle_key: key,
-                start_date: s_d,
-                end_date: e_d,
-                label,
-                has_custom_config: true,
-            });
-        } else if let Ok((sd, ed)) = cycle_bounds_for_key(&key, user.cycle_start_day) {
-            out.push(CycleInfo {
-                cycle_key: key,
-                start_date: format_ymd(sd),
-                end_date: format_ymd(ed),
-                label: default_cycle_label(sd, ed),
-                has_custom_config: false,
-            });
-        }
-    }
+    let out = resolved
+        .into_iter()
+        .zip(expense_totals)
+        .map(|(w, total_expenses)| CycleInfo {
+            cycle_key: w.cycle_key,
+            start_date: w.start_date,
+            end_date: w.end_date,
+            label: w.label,
+            has_custom_config: w.has_custom_config,
+            total_expenses,
+        })
+        .collect();
 
     Ok(out)
 }
@@ -939,11 +1016,217 @@ fn to_named_totals(map: HashMap<String, i64>, denom: i64) -> Vec<NamedTotal> {
     out
 }
 
+#[derive(Default)]
+struct OverviewCycleAgg {
+    total_income: i64,
+    total_expenses: i64,
+    casa_total: i64,
+    investments_renda_fixa: i64,
+    investments_renda_variavel: i64,
+    investments_other: i64,
+    savings_transfers_total: i64,
+    cat_totals: HashMap<String, i64>,
+    method_totals: HashMap<String, i64>,
+    card_totals: HashMap<String, i64>,
+}
+
 pub fn compute_overview(conn: &mut SqliteConnection, user: &User) -> ApiResult<OverviewResponse> {
-    let cycles = list_user_cycles(conn, user)?;
-    let mut summaries = Vec::with_capacity(cycles.len());
-    for c in &cycles {
-        summaries.push(compute_cycle_summary(conn, user, &c.cycle_key, false, false)?);
+    // O(1) bulk queries (strictly isolated by user_id and deleted_at IS NULL)
+    let configs: Vec<CycleConfig> = cycle_configs::table
+        .filter(cycle_configs::user_id.eq(&user.id))
+        .load(conn)?;
+
+    type OverviewTxRow = (
+        String,
+        i64,
+        PrimitiveDateTime,
+        Type,
+        String,
+        Option<String>,
+        Option<String>,
+        bool,
+    );
+    let txs: Vec<OverviewTxRow> = transactions::table
+        .filter(transactions::user_id.eq(&user.id))
+        .filter(transactions::deleted_at.is_null())
+        .select((
+            transactions::id,
+            transactions::amount,
+            transactions::date,
+            transactions::type_,
+            transactions::payment_method,
+            transactions::card_name,
+            transactions::category_id,
+            transactions::is_informational,
+        ))
+        .load(conn)?;
+
+    type OverviewTrRow = (String, i64, PrimitiveDateTime, String);
+    let transfers: Vec<OverviewTrRow> = account_transfers::table
+        .filter(account_transfers::user_id.eq(&user.id))
+        .filter(account_transfers::deleted_at.is_null())
+        .select((
+            account_transfers::id,
+            account_transfers::amount,
+            account_transfers::date,
+            account_transfers::transfer_kind,
+        ))
+        .load(conn)?;
+
+    let user_cats: Vec<(String, String)> = categories::table
+        .filter(categories::user_id.eq(&user.id))
+        .select((categories::id, categories::name))
+        .load(conn)?;
+    let cat_map: HashMap<String, String> = user_cats.into_iter().collect();
+
+    let mut casa_tx_ids: HashSet<String> = HashSet::new();
+    if !txs.is_empty() {
+        let tx_tag_rows: Vec<(String, String)> = transaction_tags::table
+            .inner_join(transactions::table.on(transactions::id.eq(transaction_tags::transaction_id)))
+            .inner_join(tags::table.on(tags::id.eq(transaction_tags::tag_id)))
+            .filter(transactions::user_id.eq(&user.id))
+            .filter(transactions::deleted_at.is_null())
+            .filter(tags::user_id.eq(&user.id))
+            .filter(tags::deleted_at.is_null())
+            .select((transaction_tags::transaction_id, tags::name))
+            .load(conn)?;
+        for (tx_id, tag_name) in tx_tag_rows {
+            if tag_name.eq_ignore_ascii_case("casa") {
+                casa_tx_ids.insert(tx_id);
+            }
+        }
+    }
+
+    // (is_renda_fixa, is_renda_variavel) per transfer_id
+    let mut tr_inv_flags: HashMap<String, (bool, bool)> = HashMap::new();
+    if !transfers.is_empty() {
+        let tr_tag_rows: Vec<(String, String)> = transfer_tags::table
+            .inner_join(
+                account_transfers::table.on(account_transfers::id.eq(transfer_tags::transfer_id)),
+            )
+            .inner_join(tags::table.on(tags::id.eq(transfer_tags::tag_id)))
+            .filter(account_transfers::user_id.eq(&user.id))
+            .filter(account_transfers::deleted_at.is_null())
+            .filter(tags::user_id.eq(&user.id))
+            .filter(tags::deleted_at.is_null())
+            .select((transfer_tags::transfer_id, tags::name))
+            .load(conn)?;
+        for (tr_id, tag_name) in tr_tag_rows {
+            if tag_name.eq_ignore_ascii_case("renda_fixa") {
+                tr_inv_flags.entry(tr_id).or_insert((false, false)).0 = true;
+            } else if tag_name.eq_ignore_ascii_case("renda_variavel") {
+                tr_inv_flags.entry(tr_id).or_insert((false, false)).1 = true;
+            }
+        }
+    }
+
+    let resolved = resolve_all_cycles(
+        &configs,
+        txs.iter().map(|t| t.2),
+        transfers.iter().map(|t| t.2),
+        user,
+    );
+
+    let mut bounds: Vec<(PrimitiveDateTime, PrimitiveDateTime)> = Vec::with_capacity(resolved.len());
+    for w in &resolved {
+        match (w.start_dt, w.end_dt) {
+            (Some(s), Some(e)) => bounds.push((s, e)),
+            _ => {
+                if let Some(c) = w.config {
+                    let s = parse_bound_start(&c.start_date)?;
+                    let e = parse_bound_end(&c.end_date)?;
+                    bounds.push((s, e));
+                } else {
+                    let (sd, ed) = cycle_bounds_for_key(&w.cycle_key, user.cycle_start_day)
+                        .map_err(ApiError::BadRequest)?;
+                    bounds.push((
+                        PrimitiveDateTime::new(sd, Time::MIDNIGHT),
+                        PrimitiveDateTime::new(
+                            ed,
+                            Time::from_hms(23, 59, 59).expect("valid end time"),
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    let mut aggs: Vec<OverviewCycleAgg> = (0..resolved.len())
+        .map(|_| OverviewCycleAgg::default())
+        .collect();
+
+    for (tx_id, amount, dt, type_, payment_method, card_name, category_id, is_informational) in &txs {
+        match type_ {
+            Type::Income => {
+                for (idx, (s, e)) in bounds.iter().enumerate() {
+                    if dt >= s && dt <= e {
+                        aggs[idx].total_income += *amount;
+                    }
+                }
+            }
+            Type::Expense => {
+                if *is_informational || *amount <= 0 {
+                    continue;
+                }
+                let cat_name = category_id
+                    .as_ref()
+                    .and_then(|cid| cat_map.get(cid))
+                    .map(|s| s.as_str())
+                    .unwrap_or("Sem categoria");
+                let is_casa =
+                    casa_tx_ids.contains(tx_id) || cat_name.eq_ignore_ascii_case("casa");
+                let card_trimmed = card_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+
+                for (idx, (s, e)) in bounds.iter().enumerate() {
+                    if dt >= s && dt <= e {
+                        let agg = &mut aggs[idx];
+                        agg.total_expenses += *amount;
+                        if is_casa {
+                            agg.casa_total += *amount;
+                        }
+                        *agg.cat_totals.entry(cat_name.to_string()).or_insert(0) += *amount;
+                        *agg.method_totals.entry(payment_method.clone()).or_insert(0) += *amount;
+                        if let Some(cname) = card_trimmed {
+                            *agg.card_totals.entry(cname.to_string()).or_insert(0) += *amount;
+                        }
+                    }
+                }
+            }
+            Type::Transfer => {}
+        }
+    }
+
+    for (tr_id, amount, dt, transfer_kind) in &transfers {
+        let is_investment = transfer_kind == "investment";
+        let is_savings = transfer_kind == "savings";
+        if !is_investment && !is_savings {
+            continue;
+        }
+        let (is_rf, is_rv) = if is_investment {
+            tr_inv_flags.get(tr_id).copied().unwrap_or((false, false))
+        } else {
+            (false, false)
+        };
+
+        for (idx, (s, e)) in bounds.iter().enumerate() {
+            if dt >= s && dt <= e {
+                let agg = &mut aggs[idx];
+                if is_investment {
+                    if is_rf {
+                        agg.investments_renda_fixa += *amount;
+                    } else if is_rv {
+                        agg.investments_renda_variavel += *amount;
+                    } else {
+                        agg.investments_other += *amount;
+                    }
+                } else {
+                    agg.savings_transfers_total += *amount;
+                }
+            }
+        }
     }
 
     let mut total_income: i64 = 0;
@@ -956,67 +1239,84 @@ pub fn compute_overview(conn: &mut SqliteConnection, user: &User) -> ApiResult<O
     let mut global_methods: HashMap<String, i64> = HashMap::new();
     let mut global_cards: HashMap<String, i64> = HashMap::new();
 
-    let mut monthly_evolution = Vec::with_capacity(summaries.len());
-    let mut investments_savings = Vec::with_capacity(summaries.len());
+    let mut monthly_evolution = Vec::with_capacity(resolved.len());
+    let mut investments_savings = Vec::with_capacity(resolved.len());
 
-    for s in &summaries {
-        total_income += s.total_income;
-        total_consumption += s.total_expenses;
-        total_saved_and_invested += s.total_saved_and_invested;
-        total_casa += s.casa_total;
-        if s.total_expenses > 0 || s.investments_total > 0 {
+    for (w, agg) in resolved.iter().zip(aggs.iter()) {
+        let investments_total =
+            agg.investments_renda_fixa + agg.investments_renda_variavel + agg.investments_other;
+
+        let saved_amount = if let Some(c) = w.config {
+            if c.savings_mode == "fixed" {
+                c.savings_fixed_amount.unwrap_or(0)
+            } else {
+                let pct = c.savings_percent.unwrap_or(user.default_savings_percent);
+                ((agg.total_income as f64) * (pct as f64) / 100.0).round() as i64
+            }
+        } else if agg.savings_transfers_total > 0 {
+            agg.savings_transfers_total
+        } else {
+            let pct = user.default_savings_percent;
+            ((agg.total_income as f64) * (pct as f64) / 100.0).round() as i64
+        };
+
+        let available_to_spend = agg.total_income - saved_amount;
+        let free_remainder = available_to_spend - agg.total_expenses;
+        let cycle_saved_and_invested = saved_amount + investments_total;
+
+        total_income += agg.total_income;
+        total_consumption += agg.total_expenses;
+        total_saved_and_invested += cycle_saved_and_invested;
+        total_casa += agg.casa_total;
+        if agg.total_expenses > 0 || investments_total > 0 {
             months_with_spending += 1;
         }
 
-        for cat in &s.by_category {
-            *global_cat_totals.entry(cat.name.clone()).or_insert(0) += cat.total;
+        for (cat_name, total) in &agg.cat_totals {
+            *global_cat_totals.entry(cat_name.clone()).or_insert(0) += *total;
         }
-        for m in &s.by_payment_method {
-            *global_methods.entry(m.name.clone()).or_insert(0) += m.total;
+        for (method, total) in &agg.method_totals {
+            *global_methods.entry(method.clone()).or_insert(0) += *total;
         }
-        for c in &s.by_card {
-            *global_cards.entry(c.name.clone()).or_insert(0) += c.total;
+        for (card, total) in &agg.card_totals {
+            *global_cards.entry(card.clone()).or_insert(0) += *total;
         }
 
         monthly_evolution.push(MonthlyEvolutionPoint {
-            cycle_key: s.cycle_key.clone(),
-            label: s.label.clone(),
-            income: s.total_income,
-            expenses: s.total_expenses,
-            saved: s.saved_amount,
-            free_remainder: s.free_remainder,
+            cycle_key: w.cycle_key.clone(),
+            label: w.label.clone(),
+            income: agg.total_income,
+            expenses: agg.total_expenses,
+            saved: saved_amount,
+            free_remainder,
         });
 
         investments_savings.push(InvestmentsSavingsPoint {
-            cycle_key: s.cycle_key.clone(),
-            label: s.label.clone(),
-            saved: s.saved_amount,
-            renda_fixa: s.investments_renda_fixa,
-            renda_variavel: s.investments_renda_variavel,
-            other_investments: s.investments_other,
+            cycle_key: w.cycle_key.clone(),
+            label: w.label.clone(),
+            saved: saved_amount,
+            renda_fixa: agg.investments_renda_fixa,
+            renda_variavel: agg.investments_renda_variavel,
+            other_investments: agg.investments_other,
         });
     }
 
     let mut top_cats: Vec<(String, i64)> = global_cat_totals.into_iter().collect();
-    top_cats.sort_by(|a, b| b.1.cmp(&a.1));
+    top_cats.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     let top5_categories: Vec<String> = top_cats.into_iter().take(5).map(|(n, _)| n).collect();
 
-    let categories_trend: Vec<CategoryTrendPoint> = summaries
+    let categories_trend: Vec<CategoryTrendPoint> = resolved
         .iter()
-        .map(|s| {
+        .zip(aggs.iter())
+        .map(|(w, agg)| {
             let mut totals = BTreeMap::new();
             for name in &top5_categories {
-                let val = s
-                    .by_category
-                    .iter()
-                    .find(|c| &c.name == name)
-                    .map(|c| c.total)
-                    .unwrap_or(0);
+                let val = agg.cat_totals.get(name).copied().unwrap_or(0);
                 totals.insert(name.clone(), val);
             }
             CategoryTrendPoint {
-                cycle_key: s.cycle_key.clone(),
-                label: s.label.clone(),
+                cycle_key: w.cycle_key.clone(),
+                label: w.label.clone(),
                 totals,
             }
         })
@@ -1043,7 +1343,7 @@ pub fn compute_overview(conn: &mut SqliteConnection, user: &User) -> ApiResult<O
         kpis: OverviewKpis {
             total_income,
             total_consumption,
-            months_count: summaries.len(),
+            months_count: resolved.len(),
             months_with_spending,
             monthly_average,
             total_saved_and_invested,

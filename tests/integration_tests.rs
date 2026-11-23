@@ -563,3 +563,593 @@ async fn test_cycle_summary_investments_credit_option3_and_recurrences() {
         .unwrap();
     assert_eq!(gen_tx.amount, 220_00);
 }
+
+#[actix_web::test]
+async fn test_overview_and_cycles_multi_month_parity_and_isolation() {
+    use finance_api::cycles::{compute_cycle_summary, compute_overview, list_user_cycles};
+    use finance_api::models::{Account, AccountTransfer, CycleConfig, Tag, TransactionTag, TransferTag, Type};
+    use finance_api::schema::{account_transfers, accounts, cycle_configs, tags, transaction_tags, transfer_tags};
+    use std::time::Instant;
+    use time::{Date, Month, PrimitiveDateTime, Time};
+
+    let app = TestApp::new();
+    let (user_a, _token_a) = app.create_user("User A", "a@test.local", "secret123");
+    let (user_b, _token_b) = app.create_user("User B", "b@test.local", "secret123");
+
+    let mut conn = app.pool.get().unwrap();
+    let now = now_utc();
+
+    // Create accounts for A and B
+    let acc_a = Account {
+        id: Uuid::new_v4().to_string(),
+        name: "Conta A".into(),
+        icon: None,
+        balance: 0,
+        bank_name: "BB".into(),
+        account_type: "checking".into(),
+        user_id: user_a.id.clone(),
+        deleted_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    let acc_inv_a = Account {
+        id: Uuid::new_v4().to_string(),
+        name: "Corretora A".into(),
+        icon: None,
+        balance: 0,
+        bank_name: "XP".into(),
+        account_type: "investment".into(),
+        user_id: user_a.id.clone(),
+        deleted_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    let acc_b = Account {
+        id: Uuid::new_v4().to_string(),
+        name: "Conta B".into(),
+        icon: None,
+        balance: 0,
+        bank_name: "Nubank".into(),
+        account_type: "checking".into(),
+        user_id: user_b.id.clone(),
+        deleted_at: None,
+        created_at: now,
+        updated_at: now,
+    };
+    diesel::insert_into(accounts::table)
+        .values(&vec![acc_a.clone(), acc_inv_a.clone(), acc_b.clone()])
+        .execute(&mut conn)
+        .unwrap();
+
+    let cats_a: Vec<Category> = categories::table
+        .filter(categories::user_id.eq(&user_a.id))
+        .load(&mut conn)
+        .unwrap();
+    let salary_cat_a = cats_a.iter().find(|c| c.is_salary).unwrap().clone();
+    let expense_cats_a: Vec<Category> = cats_a
+        .iter()
+        .filter(|c| c.category_type == "expense")
+        .cloned()
+        .collect();
+
+    let tags_a: Vec<Tag> = tags::table
+        .filter(tags::user_id.eq(&user_a.id))
+        .load(&mut conn)
+        .unwrap();
+    let casa_tag_a = tags_a.iter().find(|t| t.name == "casa").unwrap().clone();
+    let rf_tag_a = tags_a.iter().find(|t| t.name == "renda_fixa").unwrap().clone();
+    let rv_tag_a = tags_a.iter().find(|t| t.name == "renda_variavel").unwrap().clone();
+
+    // Seed 24 months (2024-01 .. 2025-12) for user_a:
+    // Each month: 1 salary, 30 expenses (including informational + deleted + casa-tagged), 2 transfers (1 investment, 1 savings/investment)
+    // Plus noise data for user_b to ensure strict isolation!
+    let mut tx_batch = Vec::new();
+    let mut tx_tag_batch = Vec::new();
+    let mut tr_batch = Vec::new();
+    let mut tr_tag_batch = Vec::new();
+
+    for m_idx in 0..24u32 {
+        let year = 2024 + (m_idx / 12) as i32;
+        let month_num = (m_idx % 12) + 1;
+        let month = Month::try_from(month_num as u8).unwrap();
+        let d_base = Date::from_calendar_date(year, month, 5).unwrap();
+        let dt_base = PrimitiveDateTime::new(d_base, Time::from_hms(10, 0, 0).unwrap());
+
+        // Salary
+        tx_batch.push(Transaction {
+            id: Uuid::new_v4().to_string(),
+            amount: 8000_00 + (m_idx as i64) * 100_00,
+            description: Some(format!("Salario {year}-{month_num:02}")),
+            date: dt_base,
+            type_: Type::Income,
+            payment_method: "salary_account".into(),
+            card_name: None,
+            account_id: acc_a.id.clone(),
+            transfer_id: None,
+            category_id: Some(salary_cat_a.id.clone()),
+            is_fixed: Some(true),
+            is_informational: false,
+            credit_paid: false,
+            installment_group_id: None,
+            installment_number: None,
+            installment_total: None,
+            recurring_rule_id: None,
+            needs_confirmation: false,
+            user_id: user_a.id.clone(),
+            deleted_at: None,
+            created_at: now,
+            updated_at: now,
+        });
+
+        // 30 regular expenses
+        for e in 0..30u32 {
+            let day = ((e % 14) + 1) as u8;
+            let d = Date::from_calendar_date(year, month, day).unwrap();
+            let dt = PrimitiveDateTime::new(d, Time::from_hms(12, 0, 0).unwrap());
+            let cat = &expense_cats_a[(e as usize) % expense_cats_a.len()];
+            let tx_id = Uuid::new_v4().to_string();
+            let pm = match e % 3 {
+                0 => "credit",
+                1 => "pix",
+                _ => "debit",
+            };
+            tx_batch.push(Transaction {
+                id: tx_id.clone(),
+                amount: 100_00 + ((e as i64) * 15_00),
+                description: Some(format!("Gasto {m_idx}-{e}")),
+                date: dt,
+                type_: Type::Expense,
+                payment_method: pm.into(),
+                card_name: if pm == "credit" { Some("Nubank".into()) } else { None },
+                account_id: acc_a.id.clone(),
+                transfer_id: None,
+                category_id: Some(cat.id.clone()),
+                is_fixed: Some(e % 4 == 0),
+                is_informational: false,
+                credit_paid: false,
+                installment_group_id: None,
+                installment_number: None,
+                installment_total: None,
+                recurring_rule_id: None,
+                needs_confirmation: false,
+                user_id: user_a.id.clone(),
+                deleted_at: None,
+                created_at: now,
+                updated_at: now,
+            });
+            if e % 5 == 0 {
+                tx_tag_batch.push(TransactionTag {
+                    transaction_id: tx_id,
+                    tag_id: casa_tag_a.id.clone(),
+                });
+            }
+        }
+
+        // 1 informational expense (must NOT count in expenses)
+        tx_batch.push(Transaction {
+            id: Uuid::new_v4().to_string(),
+            amount: 9999_00,
+            description: Some("Pagamento fatura informativo".into()),
+            date: dt_base,
+            type_: Type::Expense,
+            payment_method: "pix".into(),
+            card_name: None,
+            account_id: acc_a.id.clone(),
+            transfer_id: None,
+            category_id: None,
+            is_fixed: None,
+            is_informational: true,
+            credit_paid: false,
+            installment_group_id: None,
+            installment_number: None,
+            installment_total: None,
+            recurring_rule_id: None,
+            needs_confirmation: false,
+            user_id: user_a.id.clone(),
+            deleted_at: None,
+            created_at: now,
+            updated_at: now,
+        });
+
+        // 1 soft-deleted expense (must NOT count in expenses)
+        tx_batch.push(Transaction {
+            id: Uuid::new_v4().to_string(),
+            amount: 8888_00,
+            description: Some("Deletado".into()),
+            date: dt_base,
+            type_: Type::Expense,
+            payment_method: "pix".into(),
+            card_name: None,
+            account_id: acc_a.id.clone(),
+            transfer_id: None,
+            category_id: None,
+            is_fixed: None,
+            is_informational: false,
+            credit_paid: false,
+            installment_group_id: None,
+            installment_number: None,
+            installment_total: None,
+            recurring_rule_id: None,
+            needs_confirmation: false,
+            user_id: user_a.id.clone(),
+            deleted_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        });
+
+        // 1 User B expense (must NOT leak into User A)
+        tx_batch.push(Transaction {
+            id: Uuid::new_v4().to_string(),
+            amount: 7777_00,
+            description: Some("Outro usuario".into()),
+            date: dt_base,
+            type_: Type::Expense,
+            payment_method: "pix".into(),
+            card_name: None,
+            account_id: acc_b.id.clone(),
+            transfer_id: None,
+            category_id: None,
+            is_fixed: None,
+            is_informational: false,
+            credit_paid: false,
+            installment_group_id: None,
+            installment_number: None,
+            installment_total: None,
+            recurring_rule_id: None,
+            needs_confirmation: false,
+            user_id: user_b.id.clone(),
+            deleted_at: None,
+            created_at: now,
+            updated_at: now,
+        });
+
+        // Transfers for user_a: investment (RF / RV / untagged other) + savings transfer on m_idx == 2
+        let tr1_id = Uuid::new_v4().to_string();
+        tr_batch.push(AccountTransfer {
+            id: tr1_id.clone(),
+            from_account_id: acc_a.id.clone(),
+            to_account_id: Some(acc_inv_a.id.clone()),
+            amount: 500_00,
+            description: Some("Aporte".into()),
+            date: dt_base,
+            transfer_kind: "investment".into(),
+            user_id: user_a.id.clone(),
+            deleted_at: None,
+            created_at: now,
+            updated_at: now,
+        });
+        if m_idx % 3 != 2 {
+            tr_tag_batch.push(TransferTag {
+                transfer_id: tr1_id,
+                tag_id: if m_idx % 3 == 0 {
+                    rf_tag_a.id.clone()
+                } else {
+                    rv_tag_a.id.clone()
+                },
+            });
+        }
+        if m_idx == 2 {
+            tr_batch.push(AccountTransfer {
+                id: Uuid::new_v4().to_string(),
+                from_account_id: acc_a.id.clone(),
+                to_account_id: Some(acc_inv_a.id.clone()),
+                amount: 1234_00,
+                description: Some("Reserva via transferencia".into()),
+                date: dt_base,
+                transfer_kind: "savings".into(),
+                user_id: user_a.id.clone(),
+                deleted_at: None,
+                created_at: now,
+                updated_at: now,
+            });
+        }
+
+        // Soft-deleted transfer (must NOT count)
+        tr_batch.push(AccountTransfer {
+            id: Uuid::new_v4().to_string(),
+            from_account_id: acc_a.id.clone(),
+            to_account_id: Some(acc_inv_a.id.clone()),
+            amount: 4444_00,
+            description: Some("Transfer deletada".into()),
+            date: dt_base,
+            transfer_kind: "investment".into(),
+            user_id: user_a.id.clone(),
+            deleted_at: Some(now),
+            created_at: now,
+            updated_at: now,
+        });
+    }
+
+    // Custom CycleConfig with fixed savings for 2024-06 and custom bounds for 2025-01
+    diesel::insert_into(cycle_configs::table)
+        .values(&vec![
+            CycleConfig {
+                id: Uuid::new_v4().to_string(),
+                user_id: user_a.id.clone(),
+                cycle_key: "2024-06".into(),
+                start_date: "2024-05-20".into(),
+                end_date: "2024-06-19".into(),
+                label: Some("Financeiro - Junho 2024".into()),
+                savings_mode: "fixed".into(),
+                savings_percent: None,
+                savings_fixed_amount: Some(2500_00),
+                notes: None,
+                created_at: now,
+                updated_at: now,
+            },
+            CycleConfig {
+                id: Uuid::new_v4().to_string(),
+                user_id: user_a.id.clone(),
+                cycle_key: "2025-01".into(),
+                start_date: "2024-12-20".into(),
+                end_date: "2025-01-19".into(),
+                label: Some("Janeiro 2025".into()),
+                savings_mode: "percent".into(),
+                savings_percent: Some(40.0),
+                savings_fixed_amount: None,
+                notes: None,
+                created_at: now,
+                updated_at: now,
+            },
+        ])
+        .execute(&mut conn)
+        .unwrap();
+
+    // Edge cases for 2024-06 (2024-05-20 00:00:00 ..= 2024-06-19 23:59:59):
+    // 1. Exact start/end boundary expenses (must both be included)
+    let bound_start_tx_id = Uuid::new_v4().to_string();
+    let bound_end_tx_id = Uuid::new_v4().to_string();
+    tx_batch.push(Transaction {
+        id: bound_start_tx_id.clone(),
+        amount: 33_00,
+        description: Some("Borda inicio".into()),
+        date: PrimitiveDateTime::new(
+            Date::from_calendar_date(2024, Month::May, 20).unwrap(),
+            Time::MIDNIGHT,
+        ),
+        type_: Type::Expense,
+        payment_method: "pix".into(),
+        card_name: None,
+        account_id: acc_a.id.clone(),
+        transfer_id: None,
+        category_id: Some(expense_cats_a[0].id.clone()),
+        is_fixed: None,
+        is_informational: false,
+        credit_paid: false,
+        installment_group_id: None,
+        installment_number: None,
+        installment_total: None,
+        recurring_rule_id: None,
+        needs_confirmation: false,
+        user_id: user_a.id.clone(),
+        deleted_at: None,
+        created_at: now,
+        updated_at: now,
+    });
+    tx_batch.push(Transaction {
+        id: bound_end_tx_id,
+        amount: 44_00,
+        description: Some("Borda fim".into()),
+        date: PrimitiveDateTime::new(
+            Date::from_calendar_date(2024, Month::June, 19).unwrap(),
+            Time::from_hms(23, 59, 59).unwrap(),
+        ),
+        type_: Type::Expense,
+        payment_method: "debit".into(),
+        card_name: None,
+        account_id: acc_a.id.clone(),
+        transfer_id: None,
+        category_id: Some(expense_cats_a[0].id.clone()),
+        is_fixed: None,
+        is_informational: false,
+        credit_paid: false,
+        installment_group_id: None,
+        installment_number: None,
+        installment_total: None,
+        recurring_rule_id: None,
+        needs_confirmation: false,
+        user_id: user_a.id.clone(),
+        deleted_at: None,
+        created_at: now,
+        updated_at: now,
+    });
+    // 2. Zero and negative expenses (must be ignored by both list_user_cycles & compute_overview)
+    for bad_amt in [0i64, -500_00i64] {
+        tx_batch.push(Transaction {
+            id: Uuid::new_v4().to_string(),
+            amount: bad_amt,
+            description: Some("Valor nao positivo".into()),
+            date: PrimitiveDateTime::new(
+                Date::from_calendar_date(2024, Month::June, 10).unwrap(),
+                Time::from_hms(12, 0, 0).unwrap(),
+            ),
+            type_: Type::Expense,
+            payment_method: "pix".into(),
+            card_name: None,
+            account_id: acc_a.id.clone(),
+            transfer_id: None,
+            category_id: Some(expense_cats_a[0].id.clone()),
+            is_fixed: None,
+            is_informational: false,
+            credit_paid: false,
+            installment_group_id: None,
+            installment_number: None,
+            installment_total: None,
+            recurring_rule_id: None,
+            needs_confirmation: false,
+            user_id: user_a.id.clone(),
+            deleted_at: None,
+            created_at: now,
+            updated_at: now,
+        });
+    }
+    // 3. Soft-deleted "casa" tag linked to bound_start_tx_id must NOT be counted as casa
+    let deleted_casa_tag = Tag {
+        id: Uuid::new_v4().to_string(),
+        name: "CASA".into(),
+        color: None,
+        user_id: user_a.id.clone(),
+        deleted_at: Some(now),
+        created_at: now,
+        updated_at: now,
+    };
+    diesel::insert_into(tags::table)
+        .values(&deleted_casa_tag)
+        .execute(&mut conn)
+        .unwrap();
+    tx_tag_batch.push(TransactionTag {
+        transaction_id: bound_start_tx_id,
+        tag_id: deleted_casa_tag.id,
+    });
+
+    for chunk in tx_batch.chunks(100) {
+        diesel::insert_into(transactions::table).values(chunk).execute(&mut conn).unwrap();
+    }
+    for chunk in tx_tag_batch.chunks(100) {
+        diesel::insert_into(transaction_tags::table).values(chunk).execute(&mut conn).unwrap();
+    }
+    for chunk in tr_batch.chunks(100) {
+        diesel::insert_into(account_transfers::table).values(chunk).execute(&mut conn).unwrap();
+    }
+    for chunk in tr_tag_batch.chunks(100) {
+        diesel::insert_into(transfer_tags::table).values(chunk).execute(&mut conn).unwrap();
+    }
+
+    // Measure list_user_cycles and compute_overview across 10 iterations
+    let t_list = Instant::now();
+    let mut cycles = Vec::new();
+    for _ in 0..10 {
+        cycles = list_user_cycles(&mut conn, &user_a).unwrap();
+    }
+    let list_avg_ms = t_list.elapsed().as_secs_f64() * 1000.0 / 10.0;
+
+    let t_ov = Instant::now();
+    let mut ov = compute_overview(&mut conn, &user_a).unwrap();
+    for _ in 0..9 {
+        ov = compute_overview(&mut conn, &user_a).unwrap();
+    }
+    let ov_avg_ms = t_ov.elapsed().as_secs_f64() * 1000.0 / 10.0;
+
+    eprintln!(
+        "[BENCH] cycles={} | list_user_cycles avg={:.3}ms | compute_overview avg={:.3}ms",
+        cycles.len(),
+        list_avg_ms,
+        ov_avg_ms
+    );
+
+    // Verify parity against individual compute_cycle_summary calls
+    assert!(cycles.len() >= 24);
+    assert_eq!(ov.monthly_evolution.len(), cycles.len());
+    assert_eq!(ov.kpis.months_count, cycles.len());
+
+    let mut expected_income = 0i64;
+    let mut expected_expenses = 0i64;
+    let mut expected_saved_inv = 0i64;
+    let mut expected_casa = 0i64;
+    for (idx, c) in cycles.iter().enumerate() {
+        let s = compute_cycle_summary(&mut conn, &user_a, &c.cycle_key, false, false).unwrap();
+        assert_eq!(
+            c.total_expenses, s.total_expenses,
+            "CycleInfo.total_expenses mismatch for {}",
+            c.cycle_key
+        );
+        let pt = &ov.monthly_evolution[idx];
+        assert_eq!(pt.cycle_key, s.cycle_key);
+        assert_eq!(pt.label, s.label);
+        assert_eq!(pt.income, s.total_income);
+        assert_eq!(pt.expenses, s.total_expenses);
+        assert_eq!(pt.saved, s.saved_amount);
+        assert_eq!(pt.free_remainder, s.free_remainder);
+
+        let inv = &ov.investments_savings[idx];
+        assert_eq!(inv.saved, s.saved_amount);
+        assert_eq!(inv.renda_fixa, s.investments_renda_fixa);
+        assert_eq!(inv.renda_variavel, s.investments_renda_variavel);
+        assert_eq!(inv.other_investments, s.investments_other);
+
+        let trend = &ov.categories_trend[idx];
+        assert_eq!(trend.cycle_key, s.cycle_key);
+        for cat_name in &ov.top5_categories {
+            let expected_cat_val = s
+                .by_category
+                .iter()
+                .find(|bc| &bc.name == cat_name)
+                .map(|bc| bc.total)
+                .unwrap_or(0);
+            assert_eq!(
+                trend.totals.get(cat_name).copied().unwrap_or(0),
+                expected_cat_val
+            );
+        }
+
+        expected_income += s.total_income;
+        expected_expenses += s.total_expenses;
+        expected_saved_inv += s.total_saved_and_invested;
+        expected_casa += s.casa_total;
+    }
+
+    assert_eq!(ov.kpis.total_income, expected_income);
+    assert_eq!(ov.kpis.total_consumption, expected_expenses);
+    assert_eq!(ov.kpis.total_saved_and_invested, expected_saved_inv);
+    assert_eq!(ov.kpis.total_casa, expected_casa);
+    assert_eq!(ov.kpis.months_with_spending, 24);
+    // Verify custom fixed savings (2024-06 = 2500_00) and percent override (2025-01 = 40%)
+    let jun24 = ov.monthly_evolution.iter().find(|p| p.cycle_key == "2024-06").unwrap();
+    assert_eq!(jun24.saved, 2500_00);
+    let jan25 = ov.monthly_evolution.iter().find(|p| p.cycle_key == "2025-01").unwrap();
+    assert_eq!(jan25.saved, ((jan25.income as f64) * 0.40).round() as i64);
+    // Verify clean_cycle_label stripped "Financeiro - "
+    assert_eq!(jun24.label, "Junho 2024");
+
+    // Verify HTTP serialization of /api/cycles includes total_expenses and /api/overview works
+    let srv = init_test_svc!(app, LoginRateLimiter::new());
+    let req = test::TestRequest::get()
+        .uri("/api/cycles")
+        .insert_header(("Authorization", format!("Bearer {}", _token_a)))
+        .to_request();
+    let http_cycles: Vec<Value> = test::call_and_read_body_json(&srv, req).await;
+    assert_eq!(http_cycles.len(), cycles.len());
+    let http_jun24 = http_cycles
+        .iter()
+        .find(|c| c["cycle_key"].as_str() == Some("2024-06"))
+        .unwrap();
+    assert_eq!(http_jun24["total_expenses"].as_i64(), Some(jun24.expenses));
+    assert_eq!(http_jun24["label"].as_str(), Some("Junho 2024"));
+
+    let req = test::TestRequest::get()
+        .uri("/api/overview")
+        .insert_header(("Authorization", format!("Bearer {}", _token_a)))
+        .to_request();
+    let http_ov: Value = test::call_and_read_body_json(&srv, req).await;
+    assert_eq!(http_ov["kpis"]["total_income"].as_i64(), Some(ov.kpis.total_income));
+    assert_eq!(
+        http_ov["kpis"]["total_consumption"].as_i64(),
+        Some(ov.kpis.total_consumption)
+    );
+    assert_eq!(
+        http_ov["kpis"]["total_casa"].as_i64(),
+        Some(ov.kpis.total_casa)
+    );
+    assert_eq!(
+        http_ov["monthly_evolution"].as_array().map(|a| a.len()),
+        Some(cycles.len())
+    );
+
+    // Verify User B only sees their own expenses (isolated from User A)
+    let cycles_b = list_user_cycles(&mut conn, &user_b).unwrap();
+    let jun24_b = cycles_b.iter().find(|c| c.cycle_key == "2024-06").unwrap();
+    assert_eq!(jun24_b.total_expenses, 7777_00);
+    let ov_b = compute_overview(&mut conn, &user_b).unwrap();
+    assert_eq!(ov_b.kpis.total_consumption, 24 * 7777_00);
+
+    // Verify empty user edge case (0 txs, 0 transfers)
+    let (user_c, _token_c) = app.create_user("User C", "c@test.local", "secret123");
+    let cycles_c = list_user_cycles(&mut conn, &user_c).unwrap();
+    assert_eq!(cycles_c.len(), 1);
+    assert_eq!(cycles_c[0].total_expenses, 0);
+    let ov_c = compute_overview(&mut conn, &user_c).unwrap();
+    assert_eq!(ov_c.kpis.total_income, 0);
+    assert_eq!(ov_c.kpis.total_consumption, 0);
+    assert_eq!(ov_c.kpis.months_count, 1);
+    assert_eq!(ov_c.kpis.months_with_spending, 0);
+}
