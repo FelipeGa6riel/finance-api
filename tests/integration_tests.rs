@@ -32,6 +32,10 @@ impl TestApp {
                 "../migrations/2026-11-20-120000_full_finance_schema/up.sql"
             ))
             .expect("full migration");
+            conn.batch_execute(include_str!(
+                "../migrations/2026-11-24-120000_add_history_composite_indexes/up.sql"
+            ))
+            .expect("history composite indexes migration");
         }
         Self {
             pool,
@@ -1152,4 +1156,65 @@ async fn test_overview_and_cycles_multi_month_parity_and_isolation() {
     assert_eq!(ov_c.kpis.total_consumption, 0);
     assert_eq!(ov_c.kpis.months_count, 1);
     assert_eq!(ov_c.kpis.months_with_spending, 0);
+}
+
+#[derive(diesel::QueryableByName)]
+struct ExplainPlanRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    detail: String,
+}
+
+#[actix_web::test]
+async fn test_history_composite_indexes_avoid_scan_and_temp_btree() {
+    let app = TestApp::new();
+    let (user_a, _token_a) = app.create_user("Idx User", "idx@test.local", "secret123");
+    let mut conn = app.pool.get().expect("conn");
+
+    let queries = [
+        (
+            "transactions all history",
+            "EXPLAIN QUERY PLAN SELECT * FROM transactions WHERE user_id = ? AND deleted_at IS NULL ORDER BY date DESC, created_at DESC",
+            "idx_transactions_user_date",
+        ),
+        (
+            "transactions cycle window",
+            "EXPLAIN QUERY PLAN SELECT * FROM transactions WHERE user_id = ? AND deleted_at IS NULL AND date >= '2026-10-20 00:00:00' AND date <= '2026-11-19 23:59:59' ORDER BY date DESC, created_at DESC",
+            "idx_transactions_user_date",
+        ),
+        (
+            "account_transfers all history",
+            "EXPLAIN QUERY PLAN SELECT * FROM account_transfers WHERE user_id = ? AND deleted_at IS NULL ORDER BY date DESC, created_at DESC",
+            "idx_transfers_user_date",
+        ),
+        (
+            "account_transfers cycle window",
+            "EXPLAIN QUERY PLAN SELECT * FROM account_transfers WHERE user_id = ? AND deleted_at IS NULL AND date >= '2026-10-20 00:00:00' AND date <= '2026-11-19 23:59:59' ORDER BY date DESC, created_at DESC",
+            "idx_transfers_user_date",
+        ),
+    ];
+
+    for (label, sql, expected_index) in queries {
+        let rows: Vec<ExplainPlanRow> = diesel::sql_query(sql)
+            .bind::<diesel::sql_types::Text, _>(&user_a.id)
+            .load(&mut conn)
+            .unwrap_or_else(|e| panic!("EXPLAIN failed for {label}: {e}"));
+        let plan = rows
+            .iter()
+            .map(|r| r.detail.as_str())
+            .collect::<Vec<_>>()
+            .join(" | ");
+
+        assert!(
+            plan.contains(expected_index),
+            "[{label}] expected index {expected_index}, got plan: {plan}"
+        );
+        assert!(
+            !plan.to_uppercase().contains("SCAN "),
+            "[{label}] unexpected table SCAN in plan: {plan}"
+        );
+        assert!(
+            !plan.to_uppercase().contains("TEMP B-TREE"),
+            "[{label}] unexpected USE TEMP B-TREE in plan: {plan}"
+        );
+    }
 }
